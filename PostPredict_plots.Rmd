@@ -1,0 +1,1244 @@
+---
+title: "Lineage Deconvolution Benchmarking: LDB_0002_NearQual"
+author: "Anna Schedl"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    toc_depth: 6
+    theme: flatly
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE,message=FALSE, warning=FALSE, cache=TRUE, fig.align="center")
+
+#Inline code output formatting
+knitr::knit_hooks$set(inline = function(x) {
+  if(is.numeric(x)&str_detect(x,"\\.")){
+      x <- format(round(x,3),big.mark=",",nsmall = 3)
+  }else{
+    x <- format(x,big.mark=",")
+  }
+  #paste(x, collapse = ", ")
+}) 
+source("bin/custom_scripts/PostPredict_func.R", local= knitr::knit_global())
+library(DT)
+library(rjson)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(reshape2)
+library(ggpubr)
+library(ggVennDiagram)
+library(lsa)
+#library(wesanderson)
+#library(viridis)
+library("RColorBrewer")
+datatable(cars,extensions="FixedColumns")
+
+# set tool list + json file
+tool_list <- c("simulation", "freyja", "lollipop", "vaquero", "vlq")
+
+# set colors
+toolColors <- c("#BDC881", "#3A9AB2", "#E3B710", "#00755E", "#F11B00")
+names(toolColors) <- tool_list
+colScale <- scale_colour_manual(values = toolColors)
+
+json.data <- fromJSON(file=paste(getwd(), "/reference/pango-sequences/data/pango-consensus-sequences_summary.json", sep=""))
+
+#moreColors <- c("#3A9AB2", "#6FB2C1", "#91BAB6", "#A5C2A3", "#BDC881", "#DCCB4E", "#E3B710", "#E79805", "#EC7A05", "#EF5703", "#F11B00")
+```
+
+# Overview
+
+## Goal
+
+Compare tool performances over different quality parameter with VOC lineages only.
+Quality setting between 10 (low quality) to 200 (high quality) - changed simulation to equal dominance of alpha, beta, gamma & delta
+
+----
+
+## Settings & Sample Overview
+
+Each time course simulated with total of 7 quality Parameters for SWAMPy tool (see Amplicon Pseudo count) , each quality parameter simulated 3 times with random seed.
+
+```{r sample-list, echo=TRUE}
+experiment_name = "WideQual"
+no_experiment= c(9:15)
+
+#experiment_name = "realTimecourse"
+#no_experiment= c(16:22)
+
+#experiment_name = "nearQual"
+#no_experiment= c(23:29)
+
+n_replicates = c("01", "02", "03")
+quality_setting = c("400", "130", "90", "50", "30", "10", "1")
+
+exp_list <- NULL
+for (experiment in no_experiment) {
+  if (experiment < 10)
+  {experiment <- paste0("0",experiment)}
+  for (replicate in n_replicates){
+    name <- paste0("Ex",experiment, "_", replicate, "_", experiment_name)
+    exp_list <- c(exp_list, name)
+  }
+}
+sim.exp <- exp_list[1]
+
+rm(experiment, replicate, name)
+```
+
+```{r load-simulation-data, warning=FALSE, message=FALSE, echo=FALSE, results=FALSE}
+# get simulation data 
+for(i in 1:length(exp_list)) {
+  f = paste(getwd(),"/experiments/",exp_list[i],"/results/postPrediction/simulation_summary.csv", sep="")
+  data.temp <- read.csv(f)
+  data.temp$experiment <- exp_list[i]
+  if (i == 1) { 
+    sim.data <- data.temp
+  } else { 
+    common_cols <- intersect(colnames(sim.data), colnames(data.temp))
+    sim.data <- merge(x=sim.data, y=data.temp, by = common_cols, all=TRUE)
+  }
+}
+
+sim.lineages <- colnames(sim.data %>% select(-c("timepoint", "sample_name", "tool_name", "sample", "sample_date", "experiment")))
+
+# adjustement if abundances were given as 0-100, or 0-1
+#sim.data <-  sim.data %>% mutate_if(is.numeric, ~ . * 100) %>% mutate("timepoint" = timepoint / 100 )
+
+# get evaluation metrics data for experiment list
+for(i in 1:length(exp_list)) {
+  f = paste(getwd(),"/experiments/",exp_list[i],"/results/postPrediction/data.csv", sep="")
+  data.temp <- read.csv(f)
+  if (i == 1) { 
+    data.meta <- data.temp
+  } else { 
+    common_cols <- intersect(colnames(data.meta), colnames(data.temp))
+    data.meta <- merge(x=data.meta, y=data.temp, by = common_cols, all=TRUE)
+  }
+}
+
+data.meta <- data.meta %>% mutate(experiment = substr(sample,0, 7)) %>%
+            mutate(replicate = substr(experiment, 6, 7)) %>%
+            mutate(experiment = substr(experiment,0, 4))
+
+rm(i, f, data.temp, common_cols)
+```
+
+----
+
+**Total:** 
+
+`r length(quality_setting)` Quality Settings \* `r length(n_replicates)` seeds = `r length(n_replicates) * length(quality_setting)` time courses 
+
+`r length(unique(sim.data$timepoint))` samples / time course = **`r length(n_replicates) * length(no_experiment) * length(unique(sim.data$timepoint))` samples total**
+
+----
+
+```{r display-quality-setting, echo=FALSE}
+d <- data.frame(Experiment_Name = NA, quality_setting)
+
+j <- list()
+for (e in no_experiment) {
+  l <- NULL
+  for (i in 1:length(n_replicates)) {
+    if (i==1) { l <- paste0("Ex", e, "_", n_replicates[i], "_", experiment_name) 
+    }
+    else {l <- paste(l, paste0("Ex", e, "_", n_replicates[i], "_", experiment_name), sep=", ") 
+    } 
+  }
+  j <- append(j, l)
+}
+d$Experiment_Name <- j
+
+knitr::kable(d)
+
+#datatable(d, rownames = FALSE, options = list(dom = 't'))
+rm(d, i, j, l, e)
+```
+
+----
+
+## Simulated Timecourse
+
+```{r plot-simulation, warning=FALSE, message=FALSE, echo=FALSE, fig.width=10, fig.height=5}
+sim.data.long <- sim.data %>% 
+  mutate(experiment = substr(sample, 0, 4)) %>%
+  mutate(replicate = substr(sample, 6, 7)) %>%
+  select(c(sim.lineages, "timepoint", "experiment", "replicate")) %>% 
+  gather(key="lineage", value="rel_abun", -c("timepoint", "experiment", "replicate")) %>%
+  filter(!is.na(rel_abun))
+    
+p <- ggplot(sim.data.long, aes(x=timepoint, y=rel_abun*100, color=lineage)) +
+  geom_vline(aes(xintercept=timepoint), linetype="dotted", size=0.2) +
+  geom_point() +
+  geom_line() +
+  labs(
+      title="Simulated Lineage Dynamic",
+      y="Relative Abundance (in %)",
+      x="Timepoint") +
+  theme_classic() + guides(col = guide_legend(ncol = 3))
+
+print(p)
+```
+
+----
+
+## Simulated Coverage Series {.tabset}
+
+```{r plot-simulation-coverage-loop, results='asis', warning=FALSE, fig.width=10, fig.height=5}
+cat("\n\n")
+
+for (experiment in no_experiment){
+  
+  name <- paste0("Ex", experiment, "_", experiment_name)
+  
+  cat("### ", name, "\n")
+  
+  d <- NULL
+  exp <- NULL
+  
+  if (experiment < 10)
+  {experiment <- paste0("0",experiment)}
+  
+  for (replicate in n_replicates){
+    name <- paste0("Ex",experiment, "_", replicate, "_", experiment_name)
+    exp <- c(exp, name)
+  }
+  
+  for (e in exp) {
+    for (tp in unique(filter(sim.data, str_detect(sample, e))$sample)){
+      f <- paste0("~/personal_folder_BACKUP/mas_benchmark/experiments/",e,"/results/variantCall/00_stats/",tp,"/",tp, "_max_cov_10000.tsv")
+      sample <- str_replace(tp, "-", ".")
+      
+      f <- read.csv(f, sep="\t")
+      
+      f$coverage <- f[,3]
+      f$timepoint  <- filter(sim.data, sample==tp)$timepoint
+      f$timepoint_string <- paste("Timepoint ",f$timepoint)
+      f$sample <- str_replace(tp, "-", ".")
+      f$replicate <- e
+      f$experiment <- paste0("Ex",experiment)
+      d <- rbind(d, select(f, c("POS", "coverage", "sample", "experiment", "replicate", "timepoint", "timepoint_string")))
+    }
+  }
+  
+  d <- d %>% mutate(timepoint_string = fct_reorder(timepoint_string, timepoint))
+
+  p <- ggplot(data=d, aes(x=POS, y=coverage, group=replicate, color=replicate)) +
+      geom_line() +
+      facet_wrap(~timepoint_string, ncol=4) +
+      labs(title = paste("Coverage - Experiment", experiment)) 
+  
+  print(p)
+  
+  cat("\n\n")
+}
+
+rm(d, f, p, e, ex_list, exp, experiment, replicate, sample, tp, experiment_name, n_replicates, no_experiment, name)
+```
+
+## 
+
+----
+
+# Results
+
+```{r read-tool-data, warning=FALSE, message=FALSE, echo=FALSE}
+# get lineage and rel. abundance data for tools
+for(i in 1:length(exp_list)) {
+  for (j in 1:length(tool_list)) {
+    f = paste(getwd(),"/experiments/",exp_list[i],"/results/postPrediction/", tool_list[j], "_summary.csv", sep="")
+    if (tool_list[j] == "simulation"){
+      data.temp <- select(sim.data, -c("sample_date", "sample", "sample_name"))
+    }
+    else {
+      data.temp <- tryCatch(read.csv(f), error=function(e) NULL)
+      if (is.null(data.temp)) {
+        data.temp <- data.frame(timepoint = unique(sim.data$timepoint))
+      }
+      else{
+        data.temp <-  data.temp %>% select(-c("sample_name"))
+      }
+      data.temp$experiment <- exp_list[i]
+    }
+
+    if (i == 1 && j == 1) { 
+      data.tool <- data.temp
+    } else { 
+      common_cols <- intersect(colnames(data.tool), colnames(data.temp))
+      data.tool <- merge(x=data.tool, y=data.temp, by = common_cols, all=TRUE)
+    }
+  }
+}
+
+data.tool <- data.tool %>% mutate(experiment = substr(experiment,0, 7)) %>%
+            mutate(replicate = substr(experiment, 6, 7)) %>%
+            mutate(experiment = substr(experiment,0, 4)) %>%
+            mutate(across(where(is.numeric), ~na_if(., 0)))
+
+data <- merge(data.tool, unique(select(data.meta, c("timepoint", "experiment", "replicate", "uniformity_wg_per"))), 
+              by = c("timepoint", "experiment","replicate"), all=TRUE) %>%
+  mutate(across(c("uniformity_wg_per"), round, 0)) %>%
+  mutate(tool_name = tolower(tool_name))
+
+data.long <- data %>% 
+  select(-c("uniformity_wg_per")) %>%
+  gather(key="lineage", value="rel_abun", -c("timepoint", "tool_name", "experiment", "replicate")) %>%
+  filter(!is.na(rel_abun)) %>%
+  merge(select(data, c("timepoint", "experiment", "replicate", "uniformity_wg_per")), by=c("timepoint", "experiment", "replicate")) %>% unique()
+
+rm(data.meta, data.temp, data.tool, i, j, f, common_cols)
+```
+
+```{r calculate-confusion-matrix, echo=FALSE}
+data.metrics <- calculateConfusionMatrix(data.long, sim.data.long) %>% 
+  merge(select(data, c("timepoint", "experiment", "replicate", "uniformity_wg_per")), by=c("timepoint", "experiment", "replicate")) %>% unique() %>%
+  merge(sim.data.long %>% select(timepoint, lineage) %>% unique %>% group_by(timepoint) %>% summarise(count_lineage = n()), by="timepoint")
+```
+
+## Comparing replicates
+
+```{r replicate-comparision-Venn, fig.width=10, fig.height=5}
+annotate_figure(
+ggarrange(
+  vennDiagramReplicates(data.long) + labs(title="All tools", title.position = "center"),
+  vennDiagramReplicates(data.long %>% filter(tool_name=="freyja")) + labs(title="Freyja", title.position = "center"),
+  vennDiagramReplicates(data.long %>% filter(tool_name=="lollipop")) + labs(title="lollipop", title.position = "center"),
+  vennDiagramReplicates(data.long %>% filter(tool_name=="vlq")) + labs(title="VLQ", title.position = "center"),
+  vennDiagramReplicates(data.long %>% filter(tool_name=="vaquero")) + labs(title="VaQuERo", title.position = "center")
+),
+top = text_grob("Number of identified lineages between replicates", face = "bold", size = 14))
+```
+
+```{r replicate-comparison-densityPlot, echo=FALSE, warning=FALSE}
+data.metrics.noSim <- filter(data.metrics, tool_name != "simulation")
+
+col <- brewer.pal(n = 4, name = 'YlOrRd')[-(1:1)]
+
+annotate_figure(
+ggarrange(
+  densityPlot(data.metrics.noSim, "RMSE", "replicate", Colors=col),
+  densityPlot(data.metrics.noSim, "PP", "replicate", Colors=col),
+  densityPlot(data.metrics.noSim, "TP", "replicate", Colors=col),
+  densityPlot(data.metrics.noSim, "FP", "replicate", Colors=col),
+  densityPlot(data.metrics.noSim, "FN", "replicate", Colors=col),
+  densityPlot(filter(data, tool_name != "simulation"), "uniformity_wg_per", "replicate", Colors=col)
+), top = text_grob("Metrics comparision between replicates", face = "bold", size = 14))
+
+```
+
+```{r replicate-comparison, echo=FALSE, results='asis'}
+# wilcoxon ran sum test for non normal distributed, independent samples
+kruskal.test(RMSE ~ replicate, data = data.metrics.noSim)
+kruskal.test(PP ~ replicate, data = data.metrics.noSim)
+kruskal.test(TP ~ replicate, data = data.metrics.noSim)
+kruskal.test(FP ~ replicate, data = data.metrics.noSim)
+kruskal.test(FN ~ replicate, data = data.metrics.noSim)
+kruskal.test(uniformity_wg_per ~ replicate, data = filter(data, tool_name != "simulation"))
+```
+
+**Conclusion**: wilcoxon test confirms replicates are equal in RMSE, TP, TN, FP, FN & uniformity_wg_per and adjusted RMSE, TP, TN, FP, FN and can be combined. --\> redo experiment with tool replicates(same simulated data, new tool run?)
+
+----
+
+## Compare experiments
+
+```{r experiments-comparision, echo=FALSE}
+col <- brewer.pal(n = 9, name = 'PuRd')[-(1:2)]
+annotate_figure(
+ggarrange(
+  densityPlot(data.metrics.noSim, "RMSE", "experiment", Colors=col),
+  densityPlot(data.metrics.noSim, "PP", "experiment", Colors=col),
+  densityPlot(data.metrics.noSim, "TP", "experiment", Colors=col),
+  densityPlot(data.metrics.noSim, "FP", "experiment", Colors=col),
+  densityPlot(data.metrics.noSim, "FN", "experiment", Colors=col),
+  densityPlot(filter(data, tool_name != "simulation"), "uniformity_wg_per", "experiment", Color=col)
+), top = text_grob("Metrics comparision between experiments", face = "bold", size = 14))
+```
+
+```{r experiments-kruskalTest, echo=FALSE}
+# Kruskal-Wallis Test for non normal distributed, more then two groups comparision
+kruskal.test(RMSE ~ experiment, data = data.metrics.noSim)
+kruskal.test(TP ~ experiment, data = data.metrics.noSim)
+kruskal.test(FP ~ experiment, data = data.metrics.noSim)
+kruskal.test(FN ~ experiment, data = data.metrics.noSim)
+kruskal.test(uniformity_wg_per ~ experiment, data = filter(data, tool_name != "simulation"))
+rm(data.metrics.noSim)
+```
+
+**Conclusion:** experiments can NOT be combined for Error, TP, FP, FN but not for uniformiyt_wg_per as expected.
+
+----
+
+## Calculate metrics {.tabset}
+
+This is repeated for adjustement mode: different level of child nodes in the phylogenetic tree are counted to the parent lineage, relative abundances are summed up. Level 1-5 (1= 1. level children are counted to parent lineage, 2= 1. and 2. level children are counted to parent lineage, ect.)
+
+```{r metrics calculate-loop, results='asis'}
+# loop over unique ID
+levels <- c(0, 1, 2, 3)
+
+for (i in levels){
+  if (i == 0) {
+    data.metrics <- calculateMetrics(data.metrics)
+  } 
+  else {
+    assign(paste0("data.long.level", i), getAdjustedData(data.long, sim.lineages, json.data, level=i))
+    assign(paste0("data.metrics.level", i), 
+           calculateConfusionMatrix(get(paste0("data.long.level", i)), sim.data.long) %>% 
+             merge(select(data, c("timepoint", "experiment", "replicate", "uniformity_wg_per")), 
+                   by=c("timepoint", "experiment", "replicate")) %>% unique() %>%
+             merge(sim.data.long %>% select(timepoint, lineage) %>% unique %>% group_by(timepoint) %>% summarise(count_lineage = n()), by="timepoint")
+           )
+    assign(paste0("data.metrics.level", i), calculateMetrics(get(paste0("data.metrics.level", i))))
+  }
+}
+```
+
+
+```{r metrics visualisation loop, results='asis', warning=FALSE, error=FALSE}
+for (i in levels) {
+  if (i == 0) {
+    cat("### Strict mode", "\n")
+    
+    data.metrics %>%
+      mutate(across(c('RMSE', 'TPR', 'FNR', 'PPV', 'FDR', 'jaccard_index', 'F1_score'), round, 4)) %>%
+      datatable(rownames = FALSE,
+                escape = FALSE,
+                class="compact",
+                extensions="FixedColumns",
+                options = list(pageLength = 10,
+                               #dom="tip",
+                               autoWidth = TRUE,
+                               lengthChange=FALSE,
+                               scrollX = '150px',
+                               scroller = TRUE,
+                               fixedColumns = list(leftColumns = 2),
+                               columnDefs = list(list(className = 'dt-center', targets = "_all")))) #%>% knitr::knit_print() %>% cat()
+  }
+  else {
+    cat("### Adj. ",i, " level", "\n")
+    
+    get(paste0("data.metrics.level",i)) %>%
+      mutate(across(c('RMSE', 'TPR', 'FNR', 'PPV', 'FDR', 'jaccard_index', 'F1_score'), round, 4)) %>%
+      datatable(rownames = FALSE,
+                escape = FALSE,
+                class="compact",
+                #extensions="FixedColumns",
+                options = list(pageLength = 10,
+                               autoWidth = TRUE,
+                               lengthChange=FALSE,
+                               scrollX = '150px',
+                               scroller = TRUE,
+                               fixedColumns = list(leftColumns = 2),
+                               columnDefs = list(list(className = 'dt-center', targets = "_all")))) #%>% knitr::knit_print() %>% cat()
+  }
+}
+
+rm(i)
+```
+
+##
+
+----
+
+## Predicted timecoures {.tabset}
+
+```{r tool-timecourse-looptabs, results='asis', warning=FALSE}
+source("bin/custom_scripts/PostPredict_func.R", local= knitr::knit_global())
+for (tool in tool_list) {
+  
+  if (tool == "simulation") {}
+  else{
+    cat("### ", CapStr(tool), " {.tabset}", "\n")
+  
+    for (i in levels){
+      
+      if (i == 0) {
+        cat("#### Strict mode", "\n")
+        
+        mode <- "Strict mode"
+        
+        p <- tool_timepPlot(data.long, sim.data.long, tool, colScale, mode)
+        
+        print(p)
+        
+        cat("\n\n")
+        
+      }
+      else {
+        cat("#### Adj. ",i, " level", "\n")
+        
+        mode <- paste("Adj.", i)
+        
+        p <- tool_timepPlot(get(paste0("data.long.level",i)), sim.data.long, tool, colScale, mode)
+        
+        print(p)
+        
+        cat("\n\n")
+      }
+    }
+    
+    cat("\n\n")
+      
+    }
+  
+}
+rm(p, i)
+```
+
+##
+
+----
+
+## Lineage identifcation
+
+### Summary table {.tabset}
+
+```{r lineage-id-summary-loop, figh.with = 15, fig.height=10, results='asis', warning=FALSE}
+
+for (i in levels){
+  
+  if (i == 0) {
+    cat("#### Strict mode", "\n")
+    
+    mode <- "Strict mode"
+    
+    p <- annotate_figure(lineageIdentificationMetrics(data.metrics, colScale), 
+                top = text_grob(cat("Metrics - ", mode), 
+                face = "bold", size = 14))
+
+    print(p)
+    
+    cat("\n\n")
+    
+  }
+  else {
+    cat("#### Adj. ",i, " level", "\n")
+    
+    mode <- paste("Adj.", i)
+    
+    p <- annotate_figure(lineageIdentificationMetrics(get(paste0("data.metrics.level",i)), colScale), 
+                top = text_grob(cat("Metrics - ", mode), 
+                face = "bold", size = 14))
+
+    print(p)
+    
+    cat("\n\n")
+  }
+}
+rm(p, i)
+```
+
+###
+
+----
+
+### Heatmap {.tabset}
+
+```{r lineage-id-heatmap-loop, results='asis', warning=FALSE}
+for (tool in tool_list){
+  
+  cat("#### ", CapStr(tool), "\n")
+  
+  p <- tool_predictionHeatmap(list(data.long, data.long.level1, data.long.level2, data.long.level3),sim.lineages, tool)
+  
+  print(p)
+  
+  cat("\n\n")
+}
+rm(p)
+```
+
+###
+
+----
+
+## Abundance Estimation {.tabset}
+
+```{r abundanceEstimation-loop, warning=FALSE, results='asis', figh.with = 15}
+for (i in levels){
+  if (i == 0) {
+    cat("### Strict mode", "\n")
+    
+    mode <- "Strict mode"
+    
+    p <-  abundanceEstimation(data.long, sim.data.long, 
+                              paste0("Relative abundance estimation per time-course - ", mode))
+    
+    print(p)
+    
+    cat("\n\n")
+    
+  }
+  else {
+    cat("### Adj. ",i, " level", "\n")
+    
+    mode <- paste("Adj.", i)
+    
+    p <- abundanceEstimation(get(paste0("data.long.level",i)), sim.data.long, 
+                             paste0("Relative abundance estimation per time-course - ", mode))
+
+    print(p)
+    
+    cat("\n\n")
+  }
+}
+rm(p, i)
+```
+
+##
+
+----
+
+## Error Estimation {.tabset}
+
+```{r errorEstimation-loop, warning=FALSE, results='asis', figh.with = 15}
+for (i in levels){
+  if (i == 0) {
+    cat("### Strict mode", "\n")
+    
+    mode <- "Strict mode"
+    
+    p <- errorEstimation(data.long, sim.data.long, paste0("Relative abundance estimation - Residuals", mode), colors=toolColors)
+    
+    print(p)
+    
+    cat("\n\n")
+    
+  }
+  else {
+    cat("### Adj. ",i, " level", "\n")
+    
+    mode <- paste("Adj.", i)
+    
+    p <- errorEstimation(get(paste0("data.long.level",i)), sim.data.long, paste0("Residuals ", mode), colors=toolColors)
+
+    print(p)
+    
+    cat("\n\n")
+  }
+}
+rm(p, i)
+```
+
+##
+
+----
+
+## Metrics 
+
+### Per Number of lineages per sample {.tabset}
+
+```{r metrics-timepoint-loop, warning=FALSE, results='asis'}
+for (i in levels){
+  if (i == 0) {
+    cat("#### Strict mode", "\n")
+    
+     d <- data.metrics %>% group_by(tool_name, count_lineage) %>%
+      summarise("P" = mean(P),
+                "PP" = mean(PP),
+                "TP" = mean(TP),
+                "FP" = mean(FP),
+                "FN" = mean(FN),
+                "RMSE" = mean(RMSE), .groups = "drop")
+     
+    d <- calculateMetrics(d)
+    d$PPV[is.nan(d$PPV)]<-0
+    d$FDR[is.nan(d$FDR)]<-1
+                
+    p <- tool_metricsPer(d, "count_lineage", colScale) +
+      labs(
+        x="number of lineages in sample",
+        y ="",
+        title = "Prediction metrics  per number of lineages per sample")
+    
+    print(p)
+    
+    cat("\n\n")
+    
+  }
+  else {
+    cat("#### Adj. ",i, " level", "\n")
+    
+    d <- get(paste0("data.metrics.level",i)) %>% group_by(tool_name, count_lineage) %>%
+      summarise("P" = mean(P),
+                "PP" = mean(PP),
+                "TP" = mean(TP),
+                "FP" = mean(FP),
+                "FN" = mean(FN),
+                "RMSE" = mean(RMSE), .groups = "drop")
+    
+    d <- calculateMetrics(d)
+    d$PPV[is.nan(d$PPV)]<-0
+    d$FDR[is.nan(d$FDR)]<-1
+                
+    p <- tool_metricsPer(d, "count_lineage", colScale) +
+      labs(
+        x="number of simulated lineages in sample",
+        y= "",
+        title = "Prediction metrics per number of simulated lineages per sample")
+    
+    print(p)
+    
+    cat("\n\n")
+  }
+}
+rm(p, i)
+```
+
+###
+
+----
+
+### Per genomic coverage {.tabset}
+
+```{r metrics-genomic-loop, warning=FALSE, results='asis'}
+for (i in levels){
+  if (i == 0) {
+    cat("#### Strict mode", "\n")
+    
+    d <- data.metrics %>% group_by(tool_name, uniformity_wg_per) %>%
+      summarise("P" = mean(P),
+                "PP" = mean(PP),
+                "TP" = mean(TP),
+                "FP" = mean(FP),
+                "FN" = mean(FN),
+                "TPR" = mean(TPR),
+                "FNR" = mean(FNR),
+                "PPV" = mean(PPV),
+                "FDR" = mean(FDR),
+                "RMSE" = mean(RMSE), .groups = "drop")
+    
+    #d <- calculateMetrics(d)
+    d$PPV[is.nan(d$PPV)]<-0
+    d$FDR[is.nan(d$FDR)]<-1
+                
+    p <- tool_metricsPer(d, "uniformity_wg_per", colScale) +
+      labs(
+        x="whole genome coverage (in %)",
+        y="",
+        title = "Prediction metrics per genomic coverage")
+    
+    print(p)
+    
+    cat("\n\n")
+    
+  }
+  else {
+    cat("#### Adj. ",i, " level", "\n")
+    
+    d <- get(paste0("data.metrics.level",i)) %>% group_by(tool_name, uniformity_wg_per) %>%
+      summarise("P" = mean(P),
+                "PP" = mean(PP),
+                "TP" = mean(TP),
+                "FP" = mean(FP),
+                "FN" = mean(FN),
+                "TPR" = mean(TPR),
+                "FNR" = mean(FNR),
+                "PPV" = mean(PPV),
+                "FDR" = mean(FDR),
+                "RMSE" = mean(RMSE), .groups = "drop")
+    
+    d <- calculateMetrics(d)
+    d$PPV[is.nan(d$PPV)]<-0
+    d$FDR[is.nan(d$FDR)]<-1
+                
+    p <- tool_metricsPer(d, "uniformity_wg_per", colScale) +
+      labs(
+        x="whole genome coverage (in %)",
+        y="",
+        title = "Prediction metrics per genomic coverage")
+
+    print(p)
+    
+    cat("\n\n")
+  }
+}
+rm(p, i)
+```
+
+###
+
+----
+
+## Jaccard index vs RMSE {.tabset}
+
+```{r plot-VS-loop, warning=FALSE, results='asis'}
+for (i in levels){
+  if (i == 0) {
+    cat("### Strict mode", "\n")
+    
+    mode <- "Strict mode"
+                
+    p <- tool_twoDimensionPlot(data.metrics, colScale, paste0("Prediction Error - Abundance / Identification - ",mode))
+
+    print(p)
+    
+    cat("\n\n")
+    
+  }
+  else {
+    cat("### Adj. ",i, " level", "\n")
+    
+    mode <- paste("Adj.", i)
+                
+    p <- tool_twoDimensionPlot(get(paste0("data.metrics.level",i)), colScale, paste0("Prediction Error - Abundance / Identification - ",mode))
+
+    print(p)
+    
+    cat("\n\n")
+  }
+}
+rm(p, i)
+```
+
+##
+
+----
+
+```{r calculate-distance-matrix, results=FALSE}
+update = FALSE
+distanceMatrix <- CheckDistanceMatrix(unique(data.long$lineage), update=update)
+
+# manual update for missing lineages
+if (update) {
+  B.1.1.529 <- c("6513-6516", "11283-11292", "C241T","C3037T","T5386G","T13195C","C15240T","C25000T","A27259C","C27807T")
+  
+  for (i in (1:length(colnames(distanceMatrix)))) {
+    
+    var2 <- colnames(distanceMatrix)[i]
+    
+    var2_nuc <- c(json.data[[var2]]$nucSubstitutions, json.data[[var2]]$nucDeletions)
+    var2_nuc <- gsub("-", "del", var2_nuc)
+    
+    distance <- length(setdiff(B.1.1.529, var2_nuc)) / (length(B.1.1.529) + length(var2_nuc))
+    
+    distanceMatrix["B.1.1.529",colnames(distanceMatrix)[i]] <- distance
+    distanceMatrix[colnames(distanceMatrix)[i], "B.1.1.529"] <- distance
+  }
+  distanceMatrix <- as.data.frame(distanceMatrix)
+}
+
+rm(update)
+
+## list missing lineages
+#distanceMatrix %>% select("B.1.617.3") %>% filter(if_any(where(is.numeric), is.infinite))
+```
+
+
+## False Positive - Genomic Distance  {.tabset}
+
+```{r average-genomic-distance-sim}
+simDistance <- NULL
+
+for (l in sim.lineages){
+  if (l != "others") {
+    for (j in sim.lineages){
+      if (j != "others" & j != l) {
+        d <- distanceMatrix[l, j]
+        if (d != Inf){
+          simDistance <-  c(simDistance, d)
+        }
+      }
+    }
+  }
+}
+rm(l,j)
+```
+
+
+Average similarity between simulated lineages: `r mean(simDistance)` &plusmn; `r sd(simDistance)` 
+
+
+```{r visualise-distance, warning=FALSE, results='asis'}
+source("bin/custom_scripts/PostPredict_func.R", local= knitr::knit_global())
+
+for (i in levels){
+  if (i == 0) {
+    cat("### Strict mode", "\n")
+    
+    fp_distance <- calculateConfusionMatrix(data.long, sim.data.long, grouping = FALSE) %>%
+      filter(FP == 1, lineage != "others") %>% group_by(tool_name, lineage, timepoint) %>% select(c("tool_name", "lineage", "timepoint")) %>%
+      unique() %>% arrange(tool_name) %>% ungroup() %>% 
+      rowwise() %>% mutate(min_distance = getminDistance(lineage, timepoint, sim.data.long)) %>% filter(!is.infinite(min_distance))
+
+
+    p <- ggplot(fp_distance, aes(x=min_distance, color=tool_name, fill=tool_name)) +
+      geom_histogram(position = 'identity', alpha=0.9) +
+      facet_wrap(~tool_name, ncol=2, scales = "free_y") +
+      scale_color_manual(values=toolColors) +
+      scale_fill_manual(values=toolColors) +
+      theme_minimal() +
+      theme(
+        legend.position = "none",
+        text = element_text(size=12)) +
+      labs(x = "Similarity")
+    
+    print(p)
+    
+    cat("\n\n")
+    
+  }
+  else {
+    cat("### Adj. ",i, " level", "\n")
+
+    fp_distance <- calculateConfusionMatrix(get(paste0("data.long.level",i)), sim.data.long, grouping = FALSE) %>%
+      filter(FP == 1, lineage != "others") %>% group_by(tool_name, lineage, timepoint) %>% select(c("tool_name", "lineage", "timepoint")) %>% 
+      unique() %>% arrange(tool_name) %>% ungroup() %>% 
+      rowwise() %>% mutate(min_distance = getminDistance(lineage, timepoint, sim.data.long)) %>% filter(!is.infinite(min_distance))
+
+    p <- ggplot(fp_distance, aes(x=min_distance, color=tool_name, fill=tool_name)) +
+      geom_histogram(position = 'identity', alpha=0.9) +
+      facet_wrap(~tool_name, ncol=2, scales = "free_y") +
+      scale_color_manual(values=toolColors) +
+      scale_fill_manual(values=toolColors) +
+      theme_minimal() +
+      theme(
+        legend.position = "none",
+        text = element_text(size=12)) +
+      labs(x = "Similarity")
+    
+    print(p)
+    
+    cat("\n\n")
+  }
+}
+
+rm(p, i)
+```
+
+---- 
+
+# Combined results over all experiments
+
+## Load data
+
+```{r sample-list-all, echo=TRUE}
+experiment_name = "WideQual"
+n_replicates = c("01", "02", "03")
+no_experiment= c(9:15)
+
+quality_setting = c("400", "130", "90", "50", "30", "10", "1")
+
+exp_list_all <- NULL
+for (experiment in no_experiment) {
+  if (experiment < 10)
+  {experiment <- paste0("0",experiment)}
+  for (replicate in n_replicates){
+    name <- paste0("Ex",experiment, "_", replicate, "_", experiment_name)
+    exp_list_all <- c(exp_list_all, name)
+  }
+}
+
+experiment_name = "realTimecourse"
+n_replicates = c("01", "02", "03")
+no_experiment= c(16:22)
+
+quality_setting = c("400", "130", "90", "50", "30", "10", "1")
+
+
+for (experiment in no_experiment) {
+  if (experiment < 10)
+  {experiment <- paste0("0",experiment)}
+  for (replicate in n_replicates){
+    name <- paste0("Ex",experiment, "_", replicate, "_", experiment_name)
+    exp_list_all <- c(exp_list_all, name)
+  }
+}
+
+experiment_name = "nearQual"
+n_replicates = c("01", "02", "03")
+no_experiment= c(23:29)
+
+quality_setting = c("400", "130", "90", "50", "30", "10", "1")
+
+for (experiment in no_experiment) {
+  if (experiment < 10)
+  {experiment <- paste0("0",experiment)}
+  for (replicate in n_replicates){
+    name <- paste0("Ex",experiment, "_", replicate, "_", experiment_name)
+    exp_list_all <- c(exp_list_all, name)
+  }
+}
+
+rm(experiment, replicate, name)
+print(exp_list_all)
+```
+
+
+```{r read-tool-and-sim-data-all, warning=FALSE, message=FALSE, echo=FALSE}
+# get simulation data 
+for(i in 1:length(exp_list_all)) {
+  f = paste(getwd(),"/experiments/",exp_list_all[i],"/results/postPrediction/simulation_summary.csv", sep="")
+  data.temp <- read.csv(f)
+  data.temp$experiment <- exp_list_all[i]
+  if (i == 1) { 
+    sim.data.all <- data.temp
+  } else { 
+    common_cols <- intersect(colnames(sim.data.all), colnames(data.temp))
+    sim.data.all <- merge(x=sim.data.all, y=data.temp, by = common_cols, all=TRUE)
+  }
+}
+
+sim.lineages.all <- colnames(sim.data.all %>% select(-c("timepoint", "sample_name", "tool_name", "sample", "sample_date", "experiment")))
+
+sim.data.long.all <- sim.data.all %>% 
+  mutate(experiment = substr(sample, 0, 4)) %>%
+  mutate(replicate = substr(sample, 6, 7)) %>%
+  select(c(sim.lineages.all, "timepoint", "experiment", "replicate")) %>% 
+  gather(key="lineage", value="rel_abun", -c("timepoint", "experiment", "replicate")) %>%
+  filter(!is.na(rel_abun))
+
+# get evaluation metrics data for experiment list
+for(i in 1:length(exp_list_all)) {
+  f = paste(getwd(),"/experiments/",exp_list_all[i],"/results/postPrediction/data.csv", sep="")
+  data.temp <- read.csv(f)
+  if (i == 1) { 
+    data.meta.all <- data.temp
+  } else { 
+    common_cols <- intersect(colnames(data.meta.all), colnames(data.temp))
+    data.meta.all <- merge(x=data.meta.all, y=data.temp, by = common_cols, all=TRUE)
+  }
+}
+
+data.meta.all <- data.meta.all %>% mutate(experiment = substr(sample,0, 7)) %>%
+            mutate(replicate = substr(experiment, 6, 7)) %>%
+            mutate(experiment = substr(experiment,0, 4))
+
+rm(i, f, data.temp, common_cols)
+
+# get lineage and rel. abundance data for tools
+for(i in 1:length(exp_list_all)) {
+  for (j in 1:length(tool_list)) {
+    f = paste(getwd(),"/experiments/",exp_list_all[i],"/results/postPrediction/", tool_list[j], "_summary.csv", sep="")
+    if (tool_list[j] == "simulation"){
+      data.temp <- select(sim.data.all, -c("sample_date", "sample", "sample_name"))
+    }
+    else {
+      data.temp <- tryCatch(read.csv(f), error=function(e) NULL)
+      if (is.null(data.temp)) {
+        data.temp <- data.frame(timepoint = unique(sim.data$timepoint))
+      }
+      else{
+        data.temp <-  data.temp %>% select(-c("sample_name"))
+      }
+      data.temp$experiment <- exp_list_all[i]
+    }
+
+    if (i == 1 && j == 1) { 
+      data.tool.all <- data.temp
+    } else { 
+      common_cols <- intersect(colnames(data.tool.all), colnames(data.temp))
+      data.tool.all <- merge(x=data.tool.all, y=data.temp, by = common_cols, all=TRUE)
+    }
+  }
+}
+
+data.tool.all <- data.tool.all %>% mutate(experiment = substr(experiment,0, 7)) %>%
+            mutate(replicate = substr(experiment, 6, 7)) %>%
+            mutate(experiment = substr(experiment,0, 4)) %>%
+            mutate(across(where(is.numeric), ~na_if(., 0)))
+
+data.all <- merge(data.tool.all, unique(select(data.meta.all, c("timepoint", "experiment", "replicate", "uniformity_wg_per"))), 
+              by = c("timepoint", "experiment","replicate"), all=TRUE) %>%
+  mutate(across(c("uniformity_wg_per"), round, 0)) %>%
+  mutate(tool_name = tolower(tool_name))
+
+data.long.all <- data.all %>% 
+  select(-c("uniformity_wg_per")) %>%
+  gather(key="lineage", value="rel_abun", -c("timepoint", "tool_name", "experiment", "replicate")) %>%
+  filter(!is.na(rel_abun)) %>%
+  merge(select(data.all, c("timepoint", "experiment", "replicate", "uniformity_wg_per")), by=c("timepoint", "experiment", "replicate")) %>% unique()
+
+rm(data.meta.all, data.temp, data.tool.all, i, j, f, common_cols)
+
+#calculate confusion matrix
+data.metrics.all <- calculateConfusionMatrix(data.long.all, sim.data.long.all) 
+data.metrics.all <- data.metrics.all %>% 
+  merge(select(data.all, c("timepoint", "experiment", "replicate", "uniformity_wg_per")), by=c("timepoint", "experiment", "replicate")) %>% unique() %>%
+  merge(sim.data.long.all %>% select(timepoint, lineage) %>% unique %>% group_by(timepoint) %>% summarise(count_lineage = n()), by="timepoint")
+```
+
+
+## Comparing replicates
+
+```{r replicate-comparision-Venn-all, fig.width=10, fig.height=5}
+annotate_figure(
+ggarrange(
+  vennDiagramReplicates(data.long.all) + labs(title="All tools", title.position = "center"),
+  vennDiagramReplicates(data.long.all %>% filter(tool_name=="freyja")) + labs(title="Freyja", title.position = "center"),
+  vennDiagramReplicates(data.long.all %>% filter(tool_name=="lollipop")) + labs(title="lollipop", title.position = "center"),
+  vennDiagramReplicates(data.long.all %>% filter(tool_name=="vlq")) + labs(title="VLQ", title.position = "center"),
+  vennDiagramReplicates(data.long.all %>% filter(tool_name=="vaquero")) + labs(title="VaQuERo", title.position = "center")
+),
+top = text_grob("Number of identified lineages between replicates - all experiments", face = "bold", size = 14))
+```
+
+## Metrics 
+
+### Per Number of lineages per sample {.tabset}
+
+```{r metrics-timepoint-lineage-number-all, warning=FALSE, results='asis'}
+d <- data.metrics.all %>% group_by(tool_name, count_lineage) %>%
+      summarise("P" = sum(P),
+                "PP" = sum(PP),
+                "TP" = sum(TP),
+                "FP" = sum(FP),
+                "FN" = sum(FN),
+                "RMSE" = mean(RMSE), .groups = "drop")
+
+d <- calculateMetrics(d)
+
+d$PPV[is.nan(d$PPV)]<-0
+d$FDR[is.nan(d$FDR)]<-1
+
+p <- tool_metricsPer(d, "count_lineage", colScale) +
+  labs(
+    x="number of lineages in sample",
+    y ="",
+    title = "Prediction metrics  per number of lineages per sample")
+
+data.m.all <- d
+print(p)
+```
+
+### Per genomic coverage {.tabset}
+
+```{r metrics-timepoint-coverage-all, warning=FALSE, results='asis'}
+source("bin/custom_scripts/PostPredict_func.R", local= knitr::knit_global())
+
+d <- data.metrics.all %>% group_by(tool_name, uniformity_wg_per) %>%
+      summarise("P" = sum(P,  na.rm = TRUE),
+                "PP" = sum(PP,  na.rm = TRUE),
+                "TP" = sum(TP,  na.rm = TRUE),
+                "FP" = sum(FP,  na.rm = TRUE),
+                "FN" = sum(FN,  na.rm = TRUE),
+                "RMSE" = mean(RMSE,  na.rm = TRUE), .groups = "drop")
+
+d <- calculateMetrics(d)
+
+d$PPV[is.nan(d$PPV)]<-0
+d$FDR[is.nan(d$FDR)]<-1
+
+p <- tool_metricsPer(select(d, -c("TPR", "FDR", "F1_score")), "uniformity_wg_per", colScale) +
+  labs(
+    x="whole genome coverage (in %)",
+    y="",
+    title = "Prediction metrics per genomic coverage")
+
+
+rm(d) 
+print(p)
+```
+
+### Lineage identification
+
+```{r lineage-id-summary-all, warning=FALSE, message=FALSE, results='asis'}
+lineageIdentificationMetrics(select(data.m.all, c("tool_name", "PP", "TP","FP","FN","FDR","F1_score", "FNR", "jaccard_index", "PPV", "TPR")), colScale)
+```
+
+## RMSE
+
+```{r, warning=FALSE, message=FALSE}
+data.metrics.all %>% 
+  filter(tool_name != "simulation") %>%
+  mutate(timecourse = case_when(.$experiment %in% c("Ex09", "Ex10", "Ex11", "Ex12", "Ex13", "Ex14", "Ex15") ~ "WideQual",
+                                      .$experiment %in% c("Ex16", "Ex17", "Ex18", "Ex19", "Ex20", "Ex21", "Ex22") ~ "realTimecourse",
+                                      .$experiment %in% c("Ex23", "Ex24", "Ex25", "Ex26", "Ex27", "Ex28", "Ex29") ~ "nearQual")) %>%
+  group_by(timecourse, tool_name) %>% summarise(min_RMSE = min(RMSE), max_RMSE = max(RMSE), mean_RMSE=mean(RMSE), sd_RMSE= sd(RMSE), median_RMSE=median(RMSE))
+```
+```{r}
+data.metrics.all %>% select(experiment, replicate, RMSE, tool_name) %>% 
+  mutate(timecourse = case_when(.$experiment %in% c("Ex09", "Ex10", "Ex11", "Ex12", "Ex13", "Ex14", "Ex15") ~ "WideQual",
+                                      .$experiment %in% c("Ex16", "Ex17", "Ex18", "Ex19", "Ex20", "Ex21", "Ex22") ~ "realTimecourse",
+                                      .$experiment %in% c("Ex23", "Ex24", "Ex25", "Ex26", "Ex27", "Ex28", "Ex29") ~ "nearQual")) %>%
+  group_by(tool_name) %>% summarise(RMSE = mean(RMSE))
+```
+## Abundance Estimation 
+
+```{r}
+abundanceEstimation(data.long.all, sim.data.long.all, 
+                              paste0("Relative abundance estimation per time-course"))
+```
+
+
+## Jaccard index vs RMSE
+
+```{r plot-VS-all, warning=FALSE, results='asis'}
+mode <- "Strict mode"
+                
+p <- tool_twoDimensionPlot(calculateMetrics(data.metrics.all), colScale, paste0("Prediction Error - Abundance / Identification",""))
+
+print(p)
+
+```
+
+```{r visualise-distance-all, warning=FALSE, results='asis'}
+source("bin/custom_scripts/PostPredict_func.R", local= knitr::knit_global())
+
+fp_distance <- calculateConfusionMatrix(data.long.all, sim.data.long.all, grouping = FALSE) %>%
+  filter(FP == 1, lineage != "others") %>% group_by(tool_name, lineage, timepoint) %>% select(c("tool_name", "lineage", "timepoint")) %>%
+  unique() %>% arrange(tool_name) %>% ungroup() %>% 
+  rowwise() %>% mutate(min_distance = getminDistance(lineage, timepoint, sim.data.long)) %>% filter(!is.infinite(min_distance))
+
+
+p <- ggplot(fp_distance, aes(x=min_distance, color=tool_name, fill=tool_name)) +
+  geom_histogram(position = 'identity', alpha=0.9) +
+  facet_wrap(~tool_name, ncol=2, scales = "free_y") +
+  scale_color_manual(values=toolColors) +
+  scale_fill_manual(values=toolColors) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    text = element_text(size=12)) +
+  labs(x = "Similarity")
+
+print(p)
+
+rm(p, i)
+```
+```{r}
+# total metric numbers
+data.metrics.all %>% 
+  mutate(timecourse = case_when(.$experiment %in% c("Ex09", "Ex10", "Ex11", "Ex12", "Ex13", "Ex14", "Ex15") ~ "WideQual",
+                                .$experiment %in% c("Ex16", "Ex17", "Ex18", "Ex19", "Ex20", "Ex21", "Ex22") ~ "realTimecourse",
+                                .$experiment %in% c("Ex23", "Ex24", "Ex25", "Ex26", "Ex27", "Ex28", "Ex29") ~ "nearQual")) %>%
+  group_by(timecourse, tool_name) %>%
+  summarise("P" = sum(P,  na.rm = TRUE),
+            "PP" = sum(PP,  na.rm = TRUE),
+            "TP" = sum(TP,  na.rm = TRUE),
+            "FP" = sum(FP,  na.rm = TRUE),
+            "FN" = sum(FN,  na.rm = TRUE),
+            "RMSE" = mean(RMSE,  na.rm = TRUE), .groups = "drop")
+
+# average sample
+data.metrics.all %>% 
+    mutate(timecourse = case_when(.$experiment %in% c("Ex09", "Ex10", "Ex11", "Ex12", "Ex13", "Ex14", "Ex15") ~ "WideQual",
+                                  .$experiment %in% c("Ex16", "Ex17", "Ex18", "Ex19", "Ex20", "Ex21", "Ex22") ~ "realTimecourse",
+                                  .$experiment %in% c("Ex23", "Ex24", "Ex25", "Ex26", "Ex27", "Ex28", "Ex29") ~ "nearQual")) %>%
+    group_by(timecourse, tool_name) %>%
+  summarise (#P_median = median(P), 
+             P_mean = mean(P),
+             P_sd = sd(P, na.rm = TRUE), 
+             #PP_median = median(PP),
+             PP_mean = mean(PP),
+             PP_sd = sd(PP, na.rm = TRUE),
+             #TP_median = median(TP),
+             TP_mean = mean(TP),
+             TP_sd =sd(TP, na.rm = TRUE),
+             #FP_median = median(FP),
+             FP_mean = mean(FP),
+             FP_sd = sd(FP, na.rm = TRUE),
+             #FN_median = median(FN),
+             FN_mean = mean(FN),
+             FN_sd = sd(FN, na.rm = TRUE),
+             RMSE_mean = mean(RMSE),
+             RMSE_sd = sd(RMSE))
+```

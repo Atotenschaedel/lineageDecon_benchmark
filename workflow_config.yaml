@@ -1,0 +1,76 @@
+APP:
+  DEBUG: false
+  DEBUG_SAMPLES:
+  - CoV_34388_S129153
+  - CoV_34475_S129082
+  - example
+  SEED: 769
+EXPERIMENT_NAME: Ex30_01_plotting
+LOLLIPOP:
+  CREATE_REFSET: false
+  KERNEL_DECONVOLUTION_CONFIG: kernel_deconv_config.yaml
+  LOCATION_NAME: Krezlin
+POSTPRED:
+  LINEAGE_MIN_THRESHOLD: 0.01
+  MIN_READ_COUNT: 100
+REFERENCES:
+  PRIMER_SET:
+  - articV4
+  REF_GENOME:
+  - RefSeq_sequence_Wuhan-Hu1
+  REF_GENOME_COMB:
+  - hg38_sars_cov2
+SIMULATION:
+  AMPLICON_DISTRIBUTION: dirichlet_1
+  AMPLICON_PSEUDOCOUNTS: 1
+  CONSTANT_VARIANT_ABUNDANCE: 0.02
+  FORM_PARA:
+    growth_rate: 0.2
+    init_cases: 1
+    max_cases: 1000000
+  MAX_TIMEPOINTS: 365
+  N_READS: 100000
+  PRIMER_SET: a4
+  READ_LENGTH: 250
+  SAMPLE_COLLECTION:
+    NUMBER: 2
+    SAMPLE_MODE: even
+  SEQ_SYS: MSv3
+  START_DATE: '2023-01-01'
+  USE_REAL_TIMECOURSE: true
+  VARIANTS:
+    omicron_1:
+    - 0
+    - XBB.1.9
+    omicron_2:
+    - 30
+    - XBB.1.5
+    omicron_3:
+    - 230
+    - XBB.1.16
+    omicron_4:
+    - 128
+    - XBB.2.3
+TOOLS:
+  FREYJA: true
+  LOLLIPOP: true
+  VAQUERO: true
+  VLQ: true
+VAQUERO:
+  ADDRESS_TOWN: Krezlin
+  BSF_RUN: BSF_xxxx
+  BSF_START_DATE: '2023-01-01'
+  CONNECTED_PEOPLE: '1234567'
+  DCP_LATITUDE: '48.50452605'
+  DCP_LONGTITUTDE: '11.70669547'
+  INCLUDE_IN_REPORT: 'TRUE'
+  LOCATION_ID: ATTP_10-Krezlin
+  LOCATION_NAME: Krezlin
+  MARKER_DATE: '2023-03-10'
+  MARKER_LOCATION: Europe
+  N_IN_CONSENSUS: '125'
+  REPORT_CATEGORY: general
+  SAMPLE_SUFFIX: _S123456
+  STATUS: passed_qc
+VLQ:
+  CREATE_REFSET: false

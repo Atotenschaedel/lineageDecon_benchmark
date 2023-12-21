@@ -1,0 +1,19 @@
+from snakemake.utils import min_version
+
+
+min_version("6.10.0")
+
+
+configfile: "config/config.yaml"
+
+
+# declare https://github.com/cbg-ethz/V-pipe as a module
+module V_pipe:
+    snakefile: 
+        github("cbg-ethz/V-pipe", path="workflow/Snakefile", tag="master")
+    config:
+        config
+
+
+# use all rules from https://github.com/cbg-ethz/V-pipe
+use rule * from V_pipe
